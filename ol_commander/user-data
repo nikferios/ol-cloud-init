@@ -1,0 +1,234 @@
+#cloud-config
+#
+# ol-node-basic.cfg
+# Basic cloud-init configuration for OverLogic nodes
+# Includes settings and configurations common among nodes in the network
+# To be used as a template for other configurations
+#
+# Developed and maintained by OverLogic for internal use
+# www.overlogic.gr - contact@overlogic.gr
+#
+# vim syntax=yaml
+#
+
+# set the hostname and fqdn of this server
+manage_etc_hosts: true # <true/"localhost">
+hostname: # add hostname
+fqdn: # add fqdn
+
+# enable ntp service on nodes
+ntp:
+  enabled: true
+# set system timezone to Europe/Athens - change as needed
+timezone: Europe/Athens
+# create users, add keys, sudo permissions, define user shell
+users:
+#!  - name: # insert user name here
+    ssh-authorized-keys:
+#!      - # insert ssh public key here - optional
+    ssh_import_id:
+#!      - gh: # insert user to import ssh public keys from github from
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    groups: sudo
+    shell: /bin/bash
+
+# set user password and have it changed on first login
+chpasswd:
+  expire: true
+  list:
+#!  - # input format user:password - optional
+
+write_files:
+  # replace sshd_config to restrict access to the node and harden security
+  # uncomment last line and replace with created user for more security
+  - path: /etc/ssh/sshd_config
+    content: |
+        Port 22
+        Protocol 2
+        HostKey /etc/ssh/ssh_host_rsa_key
+        HostKey /etc/ssh/ssh_host_dsa_key
+        HostKey /etc/ssh/ssh_host_ecdsa_key
+        HostKey /etc/ssh/ssh_host_ed25519_key
+        UsePrivilegeSeparation yes
+        KeyRegenerationInterval 3600
+        ServerKeyBits 1024
+        SyslogFacility AUTH
+        LogLevel INFO
+        LoginGraceTime 120
+        PermitRootLogin no
+        StrictModes yes
+        RSAAuthentication yes
+        PubkeyAuthentication yes
+        IgnoreRhosts yes
+        RhostsRSAAuthentication no
+        HostbasedAuthentication no
+        PermitEmptyPasswords no
+        ChallengeResponseAuthentication no
+#!        PasswordAuthentication no # switch to yes if no ssh keys are provided
+        X11Forwarding yes
+        X11DisplayOffset 10
+        PrintMotd no
+        PrintLastLog yes
+        TCPKeepAlive yes
+        AcceptEnv LANG LC_*
+        Subsystem sftp /usr/lib/openssh/sftp-server
+        UsePAM yes
+
+# WireGuard VPN Server
+  - path: /overlogic/services/wireguard-server/docker-compose.yml
+    content: |
+        version: "2.1"
+
+        services:
+          wireguard:
+            image: linuxserver/wireguard:version-v1.0.20210914
+            container_name: wireguard
+            cap_add:
+              - NET_ADMIN
+              - SYS_MODULE
+            environment:
+              - PUID=1000
+              - PGID=1000
+              - TZ=Europe/Athens
+#!              - SERVERURL=www.example.com
+#!              - SERVERPORT=50000 # external port you are forwarding
+#!              - PEERS=user-1,user-2,user-3
+              - PEERDNS=auto #optional
+              - INTERNAL_SUBNET=10.20.30.0 #optional
+              - ALLOWEDIPS=10.0.0.0/8, 192.168.0.0/16, ::/1, 8000::/1
+            volumes:
+              - /overlogic/configs/wireguard-server:/config
+              - /lib/modules:/lib/modules
+            ports:
+#!              - 50000:51820/udp
+            sysctls:
+              - net.ipv4.conf.all.src_valid_mark=1
+            restart: unless-stopped
+# Nginx Proxy Manager
+  - path: /overlogic/services/npm/docker-compose.yml
+    content: |
+        version: "3.3"
+
+        services:
+          npm:
+            container_name: npm
+            image: 'jc21/nginx-proxy-manager:latest'
+            hostname: commander
+            domainname: # your domain here
+            restart: unless-stopped
+            ports:
+              - '80:80'
+              - '443:443'
+              - '81:81'
+            networks:
+              proxy:
+            volumes:
+              - /overlogic/data/npm:/data
+              - /overlogic/certs/npm:/etc/letsencrypt
+
+        networks:
+          proxy:
+# Portainer Standalone
+  - path: /overlogic/services/portainer/docker-compose.yml
+    content: |
+        version: "3.3"
+
+        services:
+          portainer:
+            container_name: portainer
+            image: portainer/portainer-ce:2.9.2
+            command: -H unix:///var/run/docker.sock
+            restart: always
+            networks:
+              - proxy-net
+            ports:
+              - 9000
+              - 8000
+            volumes:
+              - /var/run/docker.sock:/var/run/docker.sock
+              - portainer_data:/data
+
+        volumes:
+          portainer_data:
+        networks:
+          proxy-net:
+            external:
+              name: npm_proxy
+
+# Docker daemon setting
+  - path: /etc/docker/daemon.json
+    content: |
+        {
+          "ipv6": true,
+          "fixed-cidr-v6": "fd23:dead:babe:10::/80"
+        }
+        {
+          "log-driver": "json-file",
+          "log-opts": {
+            "max-size": "10m",
+            "max-file": "5",
+          }
+        }
+        {
+          "metrics-addr" : "0.0.0.0:9323",
+          "experimental" : true
+        }
+
+# update apt database on first boot
+package-update: true
+
+# upgrade apt packages on first boot
+package-upgrade: true
+
+# reboot after running apt-get upgrade if required
+package_reboot_if_required: true
+
+# install recommended packages
+packages:
+  # install the unattended-upgrades for automatic security updates
+  - unattended-upgrades
+  #  install the update-notifier-common package for automatic reboots after updates
+  - update-notifier-common
+  # instal ufw to harden node security
+  - ufw
+  # install fail2ban to harden node security
+  - fail2ban
+  # install various usefull packages
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg-agent
+  - software-properties-common
+  - git
+  - rsync
+
+runcmd:
+  # configure and enable fail2ban
+  - printf "[sshd]\nenabled = true\nbanaction = iptables-multiport" > /etc/fail2ban/jail.local
+  - systemctl enable fail2ban
+  # configure ufw to deny all incoming, allow all outgoing, open port 22 tcp for ssh and start on boot
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow OpenSSH
+  - sed -i -e '/^ENABLED/s/^.*$/ENABLED=yes/' /etc/ufw/ufw.conf
+  # start ufw
+  - ufw enable
+  # send email to admin and reboot if needed after performing unattended upgrades
+  - sed -i 's/\/\/Unattended\-Upgrade\:\:Mail\ \"/Unattended\-Upgrade\:\:Mail\ \"admin\@overlogic\.gr/g' /etc/apt/apt.conf.d/50unattended-upgrades
+  - sed -i 's/\/\/Unattended\-Upgrade\:\:Automatic\-Reboot\ \"false/Unattended\-Upgrade\:\:Automatic\-Reboot\ \"true/g' /etc/apt/apt.conf.d/50unattended-upgrades
+  # add apt sources and keys
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
+  - add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+  - apt-get update -y
+  # install Docker
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose
+  - systemctl start docker
+  - systemctl enable docker
+  # launch Dockerized services
+  - docker-compose -f /overlogic/services/wireguard-server/docker-compose.yml up -d
+  - docker-compose -f /overlogic/services/npm/docker-compose.yml up -d
+  - docker-compose -f /overlogic/services/portainer/docker-compose.yml up -d
+
+# enable system reboot after setup and configuration of the node has finished
+power_state:
+  mode: reboot

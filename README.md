@@ -1,6 +1,5 @@
 # cloud-init configs for launching OverLogic nodes.
-Maintained by *Nik Ferios/OverLogic*
-v0.9 - 11/2021
+v0.9 - 11/2021 | Maintained by *Nik Ferios/OverLogic*
 
 ## Available node types:
 - ol_commander (AMD64) - WireGuard, Portainer, Nginx Proxy Manager
